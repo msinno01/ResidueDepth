@@ -3,6 +3,7 @@ import numpy as np
 import random
 import math
 from scipy.spatial.distance import euclidean, pdist, squareform
+from scipy.spatial import KDTree
 import scipy.stats as sts
 import multiprocessing as mp
 import time
@@ -186,6 +187,11 @@ class Solvate:
 #             #print(w)
 #             self.water_no_clash.append(w.tolist())
             return w.tolist()
+
+    def remove_clash_kdtree_process(self,w):
+        dist, _ = self.atom_tree.query(w)
+        if dist < self.clash_dist:
+            return w
                 
         
     def remove_clash_waters(self, coords):
@@ -203,6 +209,26 @@ class Solvate:
             
         pool = mp.Pool(self.ncpus)
         result = pool.map(self.remove_clash_waters_process, water_clash)
+        pool.close()
+        pool.join()
+
+    def remove_clash_waters_kdtree(self, coords):
+        """
+        Returns new water dictionary removing clashes with protein
+        """
+        water_clash = self.trim_box().tolist()
+        atoms = []
+#         self.water_no_clash = []
+#         #print(type(water_no_clash))
+        for kp,vp in coords.items():
+#             #print(kp)
+            for vp1 in vp.values():
+                atoms.append(vp1)
+
+        self.atom_tree = KDTree(atoms)
+            
+        pool = mp.Pool(self.ncpus)
+        result = pool.map(self.remove_clash_kdtree_process, water_clash)
         pool.close()
         pool.join()
             
@@ -263,7 +289,7 @@ class Solvate:
         return [i for i,j in zip(water,dists) if j]
     
     def multi_run_wrapper(self,args):
-        return self.get_distances_process(*args)
+        return self.get_distances_kdtree_process(*args)
     
     def get_distances_process(self,k,v,k1,v1,water):
         x = 0
@@ -278,11 +304,40 @@ class Solvate:
                 if dist < min_dist:
                     min_dist = dist
         return (k,k1,min_dist)
+
+    def get_distances_kdtree_process(self,k,v,k1,v1,water):
+        dist, _ = water.query(v1)
+        return (k,k1,dist)
     
     def get_distances(self, coords, water):
         """
         Returns a dictionary with atomic distances to nearest bulk water
         """
+        d_dists = {}
+        args = []
+        for k,v in coords.items():
+            d_dists[k] = {}
+            for k1,v1 in v.items():
+                args.append((k,v,k1,v1,water))
+
+        pool = mp.Pool(self.ncpus)
+        result = pool.map(self.multi_run_wrapper, args)
+        pool.close()
+        pool.join()
+        
+        for r in result:
+            if r[0] not in d_dists:
+                d_dists[r[0]] = {r[1]:r[2]}
+            else:
+                d_dists[r[0]][r[1]] = r[2]
+                
+        return d_dists
+
+    def get_distances_kdtree(self, coords, water):
+        """
+        Returns a dictionary with atomic distances to nearest bulk water
+        """
+        water = KDTree(water)
         d_dists = {}
         args = []
         for k,v in coords.items():
@@ -352,12 +407,12 @@ def run_iteration(solv):
     start_tot = time.time()
     d_rot = solv.random_rotation()
     start = time.time()
-    wat = solv.remove_clash_waters(d_rot)
+    wat = solv.remove_clash_waters_kdtree(d_rot)
     bulk_wat = solv.remove_bulk_water(wat)
     end = time.time()
     print("Water removed in: %s s" % str(end-start))
     start = time.time()
-    dists = solv.get_distances(d_rot,bulk_wat)
+    dists = solv.get_distances_kdtree(d_rot,bulk_wat)
     end = time.time()
     print("Distances calculated in: %s s" % str(end - start))
     end_tot = time.time()
